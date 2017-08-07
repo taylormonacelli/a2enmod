@@ -1,0 +1,238 @@
+--- a2enconf	2017-08-06 20:28:10.000000000 -0700
++++ a2enconf.erb	2017-08-06 20:33:18.000000000 -0700
+@@ -1,4 +1,4 @@
+-#!/usr/bin/perl -w
++#!<%= node['platform_family'] == 'freebsd' ? '/usr/local/bin/perl' : '/usr/bin/perl'%> -w
+ #
+ # a2enmod by Stefan Fritsch <sf@debian.org>
+ # Licensed under Apache License 2.0
+@@ -11,8 +11,6 @@
+ use File::Basename;
+ use File::Path;
+ use Getopt::Long;
+-use feature ':5.16';
+-no warnings "experimental::smartmatch";
+ 
+ my $quiet;
+ my $force;
+@@ -34,19 +32,12 @@
+ my $obj        = $2;
+ my $dir_suffix = $3;
+ 
+-my @essential_module_list = qw(alias auth_basic authn_file authz_host
+-    authz_user autoindex deflate dir env filter logio mime negotiation
+-    setenvif unixd version watchdog);
+-my $env_file = $ENV{APACHE_ENVVARS};
+-if (! $env_file) {
+-    if ($ENV{APACHE_CONFDIR}) {
+-        $env_file = "$ENV{APACHE_CONFDIR}/envvars";
+-    }
+-    else {
+-        # TODO
+-        $env_file = "/etc/apache2$dir_suffix/envvars";
+-    }
+-}
++my $env_file = $ENV{APACHE_ENVVARS}
++    || (
++    $ENV{APACHE_CONFDIR}
++    ? "$ENV{APACHE_CONFDIR}/envvars"
++    : "<%= node['apache']['dir'] %>$dir_suffix/envvars"
++    );
+ $ENV{LANG} = 'C';
+ read_env_file($env_file);
+ 
+@@ -71,12 +62,11 @@
+ }
+ $name = ucfirst($obj);
+ 
+-# TODO
+-my $confdir = $ENV{APACHE_CONFDIR} || "/etc/apache2$dir_suffix";
++my $confdir = $ENV{APACHE_CONFDIR} || "<%= node['apache']['dir'] %>$dir_suffix";
+ my $availdir = $ENV{ uc("APACHE_${dir}_AVAILABLE") }
+     || "$confdir/$dir-available";
+ my $enabldir = $ENV{ uc("APACHE_${dir}_ENABLED") } || "$confdir/$dir-enabled";
+-my $statedir = $ENV{ uc("APACHE_STATE_DIRECTORY") } || "/var/lib/apache2";
++my $statedir = $ENV{ uc("APACHE_STATE_DIRECTORY") } || "<%= node['apache']['lib_dir'] %>";
+ 
+ $statedir .= "/$obj";
+ 
+@@ -84,8 +74,6 @@
+ my $linkdir = File::Spec->abs2rel( $availdir, $enabldir );
+ 
+ my $request_reload = 0;
+-my $request_htcacheclean;
+-my $htc = "apache-htcacheclean$dir_suffix";
+ 
+ my $rc = 0;
+ 
+@@ -115,14 +103,8 @@
+     doit($acton) or $rc = 1;
+ }
+ 
+-my $htcstart = "";
+-if ($request_htcacheclean) {
+-    my $cmd = ($act eq "enable") ? "start" : "stop";
+-    $htcstart = "  service $htc $cmd\n";
+-}
+-info(  "To activate the new configuration, you need to run:\n"
+-     . "  service apache2$dir_suffix $reload\n"
+-     . $htcstart
++info(
++    "To activate the new configuration, you need to run:\n  service apache2 $reload\n"
+ ) if $request_reload;
+ 
+ exit($rc);
+@@ -146,8 +128,7 @@
+ 
+     my ( $conftgt, $conflink );
+     if ( $obj eq 'module' ) {
+-        # TODO
+-        if ( $act eq 'enable' && $acton eq 'cgi' && threaded() ) {
++        if ( $acton eq 'cgi' && threaded() ) {
+             print
+                 "Your MPM seems to be threaded. Selecting cgid instead of cgi.\n";
+             $acton = 'cgid';
+@@ -196,6 +177,11 @@
+     # handle module dependencies
+     if ( $obj eq 'module' ) {
+         if ( $act eq 'enable' ) {
++            if ( $acton eq 'mpm_itk' ) {
++                warning(  "MPM_ITK is a third party module that is not part "
++                        . "of the official Apache HTTPD. It has seen less "
++                        . "testing than the official MPM modules." );
++            }
+             my @depends = get_deps("$availdir/$acton.load");
+             do_deps( $acton, @depends ) or return 0;
+ 
+@@ -274,7 +260,11 @@
+             }
+ 
+             print "Enabling $obj $acton.\n";
+-            special_module_handling($acton);
++            if ( $acton eq 'ssl' ) {
++                info(     "See /usr/share/doc/apache2/README.Debian.gz on "
++                        . "how to configure SSL and create self-signed certificates.\n"
++                );
++            }
+             return add_link( $tgt, $link )
+                 && switch_marker( $obj, $act, $acton );
+         }
+@@ -285,10 +275,6 @@
+     }
+     else {
+         if ( -e $link || -l $link ) {
+-            special_module_handling($acton);
+-            if ($obj eq 'module' && grep {$_ eq $acton} @essential_module_list) {
+-                  $force || essential_module_handling($acton);
+-            }
+             remove_link($link);
+             if ( $conflink && -e $conflink ) {
+                 remove_link($conflink);
+@@ -349,7 +335,6 @@
+ 
+ sub warn_deps {
+     my $acton = shift;
+-    # TODO
+     my $modsenabldir = $ENV{APACHE_MODS_ENABLED} || "$confdir/mods-enabled";
+     foreach my $d (@_) {
+         info("Checking dependency $d for $acton:\n");
+@@ -439,13 +424,12 @@
+ 
+ sub threaded {
+     my $result = "";
+-    # TODO
+-    $result = qx{/usr/sbin/apache2ctl -V | grep 'threaded'}
+-        if -x '/usr/sbin/apache2ctl';
++    $result = qx{<%= node['apache']['apachectl'] %> -V | grep 'threaded'}
++        if -x '<%= node['apache']['apachectl'] %>';
+     if ( $? != 0 ) {
+ 
+         # config doesn't work
+-        if ( -e "$enabldir/mpm_prefork.load" )
++        if ( -e "$enabldir/mpm_prefork.load" || -e "$enabldir/mpm_itk.load" )
+         {
+             return 0;
+         }
+@@ -468,7 +452,6 @@
+         return 1;
+     }
+     else {
+-        # TODO
+         die("Can't parse output from apache2ctl -V:\n$result\n");
+     }
+ }
+@@ -497,7 +480,6 @@
+     my $file = shift;
+ 
+     -r $file or return;
+-    # TODO
+     my @lines = qx{env - sh -c '. $file && env'};
+     if ($?) {
+         die "Could not read $file\n";
+@@ -531,7 +513,6 @@
+     }
+ 
+     # XXX: swap find with perl alternative
+-    # TODO
+     my @markers = qx{find "$statedir" -type f -a -name "$name"};
+     chomp(@markers);
+     foreach (@markers) {
+@@ -548,58 +529,4 @@
+     }
+ }
+ 
+-sub essential_module_handling {
+-    my $module = shift;
+-
+-    print "WARNING: The following essential module will be disabled.\n";
+-    print "This might result in unexpected behavior and should NOT be done\n";
+-    print "unless you know exactly what you are doing!\n $module\n\n";
+-    print "To continue type in the phrase 'Yes, do as I say!' or retry by passing '-f': ";
+-    my $input = <STDIN>;
+-    chomp($input);
+-    if ($input ne 'Yes, do as I say!') {
+-        print("Aborting\n");
+-        exit(1)
+-    }
+-}
+-
+-sub special_module_handling {
+-    my $acton = shift;
+-
+-    if ($obj ne 'module') {
+-        return;
+-    }
+-
+-    given ($acton) {
+-        when ('ssl') {
+-            if ( $act eq 'enable' ) {
+-                # TODO
+-                info(  "See /usr/share/doc/apache2/README.Debian.gz on "
+-                     . "how to configure SSL and create self-signed "
+-                     . "certificates.\n"
+-                );
+-            }
+-        }
+-        when ('cache_disk') {
+-            $request_htcacheclean = 1;
+-            my $verb = "\u$act";
+-            $verb =~ s/e$/ing/;
+-            info("$verb external service $htc\n");
+-            # The init script has no Default-Start runlevels, so we need to
+-            # specify them explicitly.
+-            # TODO
+-            system("update-rc.d $htc $act 2 3 4 5");
+-            if ($rc == 0) {
+-                info("The service will be started on next reboot.\n")
+-                    if $act eq 'enable';
+-            }
+-            else {
+-                # TODO
+-                warning("update-rc.d failed\n");
+-            }
+-
+-        }
+-    }
+-}
+-
+ # vim: syntax=perl sw=4 sts=4 sr et
